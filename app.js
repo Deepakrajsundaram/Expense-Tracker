@@ -224,7 +224,16 @@ async function handleFile(file){
     for(const name of wb.SheetNames){
       const sheet=wb.Sheets[name];
       const matrix=XLSX.utils.sheet_to_json(sheet,{header:1,defval:"",raw:false});
-      const headerIndex=matrix.findIndex(r=>r.some(c=>String(c).toLowerCase().includes("transaction date")));
+      // Banks often have metadata rows such as "Transaction Date from" before the real table header.
+      // Require the actual transaction-table columns together, not just the words "transaction date".
+      const headerIndex=matrix.findIndex(r=>{
+        const cells=r.map(c=>String(c).trim().toLowerCase());
+        const hasDate=cells.some(c=>c === "transaction date" || c === "value date");
+        const hasRemarks=cells.some(c=>c.includes("transaction remarks") || c.includes("narration") || c.includes("description"));
+        const hasDebit=cells.some(c=>c.includes("withdrawal amount") || c === "debit" || c === "withdrawal");
+        const hasCredit=cells.some(c=>c.includes("deposit amount") || c === "credit" || c === "deposit");
+        return hasDate && hasRemarks && hasDebit && hasCredit;
+      });
       if(headerIndex>=0){ rows=matrix.slice(headerIndex); break; }
       const generic=XLSX.utils.sheet_to_json(sheet,{defval:""});
       if(generic.length){ rows=generic; break; }
