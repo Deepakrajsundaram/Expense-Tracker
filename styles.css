@@ -35,3 +35,30 @@ canvas{max-width:100%}
 .modal{position:fixed;inset:0;z-index:50;display:flex;align-items:flex-end;justify-content:center}.modal.hidden{display:none}.modal-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.65);backdrop-filter:blur(5px)}.modal-card{position:relative;width:min(100%,520px);max-height:88vh;overflow:auto;background:#0a1422;border:1px solid var(--line);border-radius:24px 24px 0 0;padding:20px 16px calc(20px + env(safe-area-inset-bottom));box-shadow:0 -20px 60px rgba(0,0,0,.45)}.modal-close{position:absolute;right:10px;top:8px;font-size:28px}.modal-card h2{font-size:19px;margin:0 35px 6px 0}.modal-card p{font-size:12px;color:var(--muted);line-height:1.5}
 .toast{position:fixed;left:50%;bottom:90px;transform:translateX(-50%);background:#eaf2ff;color:#07111f;padding:10px 14px;border-radius:999px;font-size:12px;font-weight:700;z-index:80;box-shadow:0 10px 30px rgba(0,0,0,.35)}
 @media(min-width:700px){body{padding-bottom:0}.app-shell{border-left:1px solid #101d2c;border-right:1px solid #101d2c}.bottom-nav{position:sticky;bottom:0}}
+
+/* Mobile layout refinement */
+html,body{width:100%;overflow-x:hidden}
+.app-shell{width:100%;max-width:520px}
+main{width:100%;padding:14px 14px calc(14px + env(safe-area-inset-bottom))}
+.topbar{padding-left:14px;padding-right:14px}
+.hero,.card,.action,.stat,.review-item{min-width:0}
+.action{width:100%;overflow-wrap:anywhere}
+.modal{padding:0}
+.modal-card{width:100%;max-width:520px;max-height:92dvh;overflow-y:auto;overflow-x:hidden;padding:20px 14px calc(20px + env(safe-area-inset-bottom));border-radius:22px 22px 0 0}
+.modal-card .stat-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+.modal-card .button-row{position:sticky;bottom:0;padding-top:10px;background:linear-gradient(180deg,rgba(10,20,34,0),#0a1422 22%)}
+@media(max-width:560px){
+  .action-grid{grid-template-columns:1fr}
+  .hero-amount{font-size:30px}
+  .row{gap:8px}
+  .toolbar{display:grid;grid-template-columns:minmax(0,1fr) 105px}
+  .toolbar .select{max-width:none!important}
+  .modal-card .row{align-items:flex-start}
+  .modal-card .stat-grid{gap:8px}
+  .modal-card .stat{padding:11px}
+  .modal-card .stat-value{font-size:17px}
+  .modal-card .button-row{gap:7px}
+  .primary,.secondary,.danger{min-height:44px;padding:11px 12px}
+  .chip{min-height:40px;padding:8px 10px}
+  .input,.select{min-height:44px}
+}

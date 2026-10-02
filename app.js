@@ -86,7 +86,8 @@ async function init(){
     for(const [pattern,category] of DEFAULT_RULES) await dbPut(STORE_RULES,{pattern,category});
     state.rules=await dbGetAll(STORE_RULES);
   }
-  state.month = currentMonth();
+  const months = [...new Set(state.transactions.map(t=>t.month).filter(Boolean))].sort().reverse();
+  state.month = months[0] || currentMonth();
   bindNav();
   render();
 }
@@ -148,7 +149,7 @@ function renderHome(){
   </section>
   <div class="action-grid">
     <button class="action" id="uploadAction"><strong>＋ Upload statement</strong><span>CSV, XLS or XLSX</span></button>
-    <button class="action" id="reviewAction"><strong>⚠ ${reviewCount} to review</strong><span>Only uncertain transactions</span></button>
+    <button class="action" id="reviewAction"><strong>⚠ ${reviewCount} to review</strong><span>Review whenever you want</span></button>
   </div>
   <div class="card"><div class="card-title">Where your money went</div>
     ${cats.length?cats.slice(0,8).map(([c,v])=>`<div class="category-row"><div><span class="cat-dot"></span><span class="cat-name">${esc(c)}</span><div class="progress"><i style="width:${Math.min(100,v/total*100)}%"></i></div></div><div class="cat-amount">${money(v)}</div></div>`).join(""):`<div class="empty"><strong>No expenses yet</strong>Upload your first statement.</div>`}
@@ -313,13 +314,15 @@ async function prepareImport(rows,filename){
   const possible=[], fresh=[];
   for(const r of rows){
     const c=categorize(r.description,r.kind);
-    const t={...r,id:fingerprint(r),merchant:normalizeMerchant(r.description),category:c.category,needsReview:c.needsReview,sourceFile:filename,importedAt:new Date().toISOString()};
+    const t={...r,month:monthKey(r.date),id:fingerprint(r),merchant:normalizeMerchant(r.description),category:c.category,needsReview:c.needsReview,sourceFile:filename,importedAt:new Date().toISOString()};
     if(existing.has(t.id)) continue;
     // Soft duplicate check: same date + amount + kind + normalized merchant.
     const soft=state.transactions.find(x=>x.date===t.date&&x.amount===t.amount&&x.kind===t.kind&&x.merchant.toUpperCase()===t.merchant.toUpperCase());
     if(soft) possible.push({...t,possibleDuplicateOf:soft.id}); else fresh.push(t);
   }
-  return {filename,total:rows.length,already:rows.length-fresh.length-possible.length,newCount:fresh.length,possibleCount:possible.length,newItems:[...fresh,...possible]};
+  const newItems=[...fresh,...possible];
+  const reviewCount=newItems.filter(t=>t.needsReview||t.possibleDuplicateOf).length;
+  return {filename,total:rows.length,already:rows.length-newItems.length,newCount:fresh.length,possibleCount:possible.length,reviewCount,newItems};
 }
 
 function showImportPreview(r){
@@ -328,37 +331,33 @@ function showImportPreview(r){
     <div class="stat-grid">
       <div class="stat"><div class="stat-label">Rows detected</div><div class="stat-value">${r.total}</div></div>
       <div class="stat"><div class="stat-label">Already imported</div><div class="stat-value">${r.already}</div></div>
-      <div class="stat"><div class="stat-label">New</div><div class="stat-value">${r.newCount}</div></div>
-      <div class="stat"><div class="stat-label">Possible duplicates</div><div class="stat-value">${r.possibleCount}</div></div>
+      <div class="stat"><div class="stat-label">New</div><div class="stat-value">${r.newCount + r.possibleCount}</div></div>
+      <div class="stat"><div class="stat-label">Needs review</div><div class="stat-value">${r.reviewCount}</div></div>
     </div>
-    <div class="card"><p>Nothing is written to the database until you confirm. Possible duplicates are kept out of the import until you review them.</p>
-    <div class="button-row"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="startImportReview()">Review & Import</button></div></div>`);
+    <div class="card"><p>Transactions will be imported now. Items that need attention will be marked <b>Needs review</b> so you can review them later.</p>
+    <div class="button-row"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="startImportReview()">Import ${r.newCount + r.possibleCount} transactions</button></div></div>`);
 }
 async function startImportReview(){
-  const items=state.importBatch.newItems;
+  const items=state.importBatch?.newItems||[];
   if(!items.length){closeModal();toast("Nothing new to import.");return}
 
-  // Known, non-duplicate transactions can be committed immediately.
-  const automatic = items.filter(t=>!t.needsReview && !t.possibleDuplicateOf);
-  let automaticAdded = 0;
-  for(const t of automatic){
-    await dbPut(STORE_TX,t);
-    automaticAdded++;
+  let added=0;
+  for(const t of items){
+    // Import everything that is not an exact fingerprint match.
+    // Uncertain and soft-duplicate candidates remain visible and are reviewed later.
+    await dbPut(STORE_TX,{...t,needsReview:!!(t.needsReview || t.possibleDuplicateOf)});
+    added++;
   }
 
-  // Only uncertain transactions and possible duplicates require a human decision.
-  const reviewItems = items.filter(t=>t.needsReview || t.possibleDuplicateOf);
-  if(!reviewItems.length){
-    state.transactions=await dbGetAll(STORE_TX);
-    state.rules=await dbGetAll(STORE_RULES);
-    state.importBatch=null;
-    closeModal(); state.view="home"; render();
-    toast(`${automaticAdded} new transaction${automaticAdded===1?"":"s"} imported.`);
-    return;
-  }
-
+  state.transactions=await dbGetAll(STORE_TX);
+  state.rules=await dbGetAll(STORE_RULES);
+  const importedMonths=items.map(t=>t.month).filter(Boolean).sort().reverse();
+  state.month=importedMonths[0] || state.month;
+  state.importBatch=null;
   closeModal();
-  showReview(reviewItems,0,[]);
+  state.view="home";
+  render();
+  toast(`${added} transaction${added===1?"":"s"} imported.`);
 }
 function showReviewFromState(){
   const items=state.transactions.filter(t=>t.needsReview);
