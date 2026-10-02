@@ -30,3 +30,14 @@ main{width:100%;padding:18px 16px calc(18px + env(safe-area-inset-bottom))}
 .toast{position:fixed;left:50%;bottom:calc(88px + env(safe-area-inset-bottom));transform:translateX(-50%);max-width:calc(100vw - 32px);background:#eef5ff;color:#081321;padding:10px 14px;border-radius:999px;font-size:11px;font-weight:800;z-index:300;box-shadow:0 10px 30px rgba(0,0,0,.35);text-align:center}
 @media(max-width:560px){main{padding-left:13px;padding-right:13px}.action-grid{grid-template-columns:1fr}.hero{padding:19px}.hero-amount{font-size:31px}.page-head{align-items:flex-start}.month-select{min-width:118px;max-width:135px}.toolbar{grid-template-columns:minmax(0,1fr) 105px}.modal-card{padding-left:13px;padding-right:13px}.modal-card .stat{padding:11px}.modal-card .stat-value{font-size:17px}.button-row{gap:7px}.primary,.secondary,.danger{min-height:44px}.chip{min-height:42px}.nav-btn{font-size:18px}.brand-title{font-size:14px}}
 @media(min-width:700px){body{padding-bottom:0}.bottom-nav{position:sticky;bottom:0}.app-shell{border-left:1px solid rgba(255,255,255,.04);border-right:1px solid rgba(255,255,255,.04)}}
+
+/* v1.0.5 — rules and transaction sorting polish */
+.rule-help{font-size:11px;line-height:1.5;margin:-2px 0 12px}
+.rule-form{display:grid;grid-template-columns:minmax(0,1.25fr) minmax(150px,.9fr);gap:10px;align-items:end}
+.rule-form .full{grid-column:1/-1}
+.field{display:grid;gap:6px}.field label{font-size:10px;color:var(--muted);font-weight:700}
+.count-badge{display:inline-flex;min-width:22px;height:22px;padding:0 7px;align-items:center;justify-content:center;border-radius:999px;background:rgba(91,140,255,.12);color:#a9c4ff;font-size:10px;margin-left:5px;vertical-align:middle}
+.review-action{position:relative;width:100%;display:grid;grid-template-columns:1fr auto;gap:2px 10px;text-align:left;border:0;background:transparent;color:var(--text);padding:2px 0}
+.review-action strong{font-size:12px}.review-action span{font-size:10px;color:var(--muted)}.review-action b{grid-row:1/3;grid-column:2;align-self:center;font-size:22px;color:#60748d}
+.review-card{padding:12px 15px}
+@media(max-width:560px){.rule-form{grid-template-columns:1fr}.rule-form .full{grid-column:1}.toolbar{grid-template-columns:minmax(0,1fr) 92px 92px}.toolbar .select{min-width:0;padding-left:8px;padding-right:22px}}

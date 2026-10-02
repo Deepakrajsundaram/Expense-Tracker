@@ -1,14 +1,14 @@
 /* D's Expense Tracker v1.0.0
    Local-first. No bank connection. No server-side transaction storage.
 */
-const APP_VERSION = "1.0.4";
+const APP_VERSION = "1.0.5";
 const DB_NAME = "ds-expense-tracker";
 const DB_VERSION = 1;
 const STORE_TX = "transactions";
 const STORE_RULES = "rules";
 const STORE_META = "meta";
 
-const CATEGORIES = [
+const BASE_CATEGORIES = [
   "Food & Dining","Groceries","Shopping","Transport","Health",
   "Bills & Utilities","Entertainment","Subscriptions","Travel",
   "Investments","Loan / EMI","Cash Withdrawal","Transfer",
@@ -34,10 +34,13 @@ const DEFAULT_RULES = [
   ["EMI","Loan / EMI"]
 ];
 
-let state = { view:"home", transactions:[], rules:[], month:null, importBatch:null, search:"", filter:"all" };
+let CATEGORIES = [...BASE_CATEGORIES];
+let state = { view:"home", transactions:[], rules:[], month:null, importBatch:null, search:"", filter:"all", sort:"newest" };
 let dbPromise;
 
 const $ = id => document.getElementById(id);
+const allCategories = () => CATEGORIES;
+const categoryOptions = (includeNew=true) => allCategories().map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("") + (includeNew?`<option value="__new__">＋ Add new category</option>`:"");
 const money = n => new Intl.NumberFormat("en-IN",{style:"currency",currency:"INR",maximumFractionDigits:0}).format(Number(n)||0);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
 const fmtDate = iso => { if(!iso) return ""; const d=new Date(iso+"T00:00:00"); return d.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}); };
@@ -82,6 +85,11 @@ async function dbClear(store){
 async function init(){
   state.transactions=await dbGetAll(STORE_TX);
   state.rules=await dbGetAll(STORE_RULES);
+  const custom=await dbGetAll(STORE_META);
+  const customCategories=custom.find(x=>x.key==="customCategories")?.value;
+  if(Array.isArray(customCategories)){
+    CATEGORIES=[...new Set([...BASE_CATEGORIES,...customCategories.map(x=>String(x).trim()).filter(Boolean)])];
+  }
   if(!state.rules.length){
     for(const [pattern,category] of DEFAULT_RULES) await dbPut(STORE_RULES,{pattern,category});
     state.rules=await dbGetAll(STORE_RULES);
@@ -112,6 +120,7 @@ function wireView(){
   const monthSel=$("monthSelect"); if(monthSel) monthSel.onchange=e=>{state.month=e.target.value;render()};
   const search=$("search"); if(search) search.oninput=e=>{state.search=e.target.value;renderTransactionsContent()};
   const filter=$("filter"); if(filter) filter.onchange=e=>{state.filter=e.target.value;renderTransactionsContent()};
+  const sortSelect=$("sortSelect"); if(sortSelect) sortSelect.onchange=e=>{state.sort=e.target.value;renderTransactionsContent()};
   const upload=$("uploadAction"); if(upload) upload.onclick=openFilePicker;
   const review=$("reviewAction"); if(review) review.onclick=showReviewFromState;
   const exportBtn=$("exportBtn"); if(exportBtn) exportBtn.onclick=exportBackup;
@@ -119,6 +128,8 @@ function wireView(){
   document.querySelectorAll("[data-category]").forEach(b=>b.onclick=()=>showCategoryTransactions(decodeURIComponent(b.dataset.category)));
   // Settings import-delete buttons are wired when the modal is opened.
   const ruleInput=$("rulePattern"); if(ruleInput) $("addRuleBtn").onclick=addRule;
+  const addCategoryBtn=$("addCategoryBtn"); if(addCategoryBtn) addCategoryBtn.onclick=addCustomCategory;
+  const ruleCategory=$("ruleCategory"); if(ruleCategory) ruleCategory.onchange=async e=>{if(e.target.value==="__new__"){e.target.value=CATEGORIES[0];await addCustomCategory();}};
 }
 
 function monthOptions(){
@@ -150,13 +161,6 @@ function renderHome(){
     <div class="row"><div><div class="eyebrow">Monthly spending</div><div class="hero-amount">${money(s.spending)}</div><div class="muted" style="font-size:11px">${s.transactions} transactions</div></div>
     <select id="monthSelect" class="select" style="width:auto;min-width:140px">${monthOptions()}</select></div>
   </section>
-  <div class="action-grid">
-    <button class="action" id="uploadAction"><strong>＋ Upload statement</strong><span>CSV, XLS or XLSX</span></button>
-    <button class="action" id="reviewAction"><strong>⚠ ${reviewCount} to review</strong><span>Review whenever you want</span></button>
-  </div>
-  <div class="card"><div class="card-title">Where your money went</div>
-    ${cats.length?cats.slice(0,8).map(([c,v])=>`<button class="category-row category-button" data-category="${encodeURIComponent(c)}"><div><span class="cat-dot"></span><span class="cat-name">${esc(c)}</span><div class="progress"><i style="width:${Math.min(100,v/total*100)}%"></i></div></div><div class="cat-amount">${money(v)} <span class="row-chevron">›</span></div></button>`).join(""):`<div class="empty"><strong>No expenses yet</strong>Upload your first statement.</div>`}
-  </div>
   <div class="card"><div class="card-title">Money movement</div>
     <div class="stat-grid">
       <div class="stat"><div class="stat-label">Income</div><div class="stat-value">${money(s.income)}</div></div>
@@ -165,6 +169,10 @@ function renderHome(){
       <div class="stat"><div class="stat-label">Actual spending</div><div class="stat-value">${money(s.spending)}</div></div>
     </div>
   </div>
+  <div class="card"><div class="card-title">Where your money went</div>
+    ${cats.length?cats.slice(0,8).map(([c,v])=>`<button class="category-row category-button" data-category="${encodeURIComponent(c)}"><div><span class="cat-dot"></span><span class="cat-name">${esc(c)}</span><div class="progress"><i style="width:${Math.min(100,v/total*100)}%"></i></div></div><div class="cat-amount">${money(v)} <span class="row-chevron">›</span></div></button>`).join(""):`<div class="empty"><strong>No expenses yet</strong>Upload your first statement.</div>`}
+  </div>
+  <div class="card review-card"><button class="action review-action" id="reviewAction"><strong>⚠ ${reviewCount} transaction${reviewCount===1?"":"s"} to review</strong><span>Review whenever you want</span><b>›</b></button></div>
   <div class="card"><div class="card-title">Recent transactions</div>${recent.length?recent.map(transactionHtml).join(""):`<div class="empty">No transactions for this month.</div>`}</div>`;
 }
 function transactionHtml(t){
@@ -177,7 +185,7 @@ function renderTransactions(){
   const count=state.transactions.filter(t=>t.month===state.month).length;
   return `<div class="page-head"><div><div class="section-kicker">Activity</div><div class="section-title">Transactions</div><div class="page-subtitle">${count} transaction${count===1?"":"s"} in ${esc(monthLabel(state.month))}</div></div>
     <select id="monthSelect" class="select month-select">${monthOptions()}</select></div>
-    <div class="toolbar"><input id="search" class="input" placeholder="Search merchant or description" value="${esc(state.search)}"><select id="filter" class="select"><option value="all" ${state.filter==="all"?"selected":""}>All</option><option value="expense" ${state.filter==="expense"?"selected":""}>Expenses</option><option value="income" ${state.filter==="income"?"selected":""}>Income</option></select></div>
+    <div class="toolbar"><input id="search" class="input" placeholder="Search merchant or description" value="${esc(state.search)}"><select id="filter" class="select"><option value="all" ${state.filter==="all"?"selected":""}>All</option><option value="expense" ${state.filter==="expense"?"selected":""}>Expenses</option><option value="income" ${state.filter==="income"?"selected":""}>Income</option></select><select id="sortSelect" class="select"><option value="newest" ${state.sort==="newest"?"selected":""}>Newest</option><option value="oldest" ${state.sort==="oldest"?"selected":""}>Oldest</option><option value="high" ${state.sort==="high"?"selected":""}>Highest amount</option><option value="low" ${state.sort==="low"?"selected":""}>Lowest amount</option><option value="az" ${state.sort==="az"?"selected":""}>A → Z</option><option value="za" ${state.sort==="za"?"selected":""}>Z → A</option></select></div>
     <div id="transactionsContent"></div>`;
 }
 function renderTransactionsContent(){
@@ -185,7 +193,13 @@ function renderTransactionsContent(){
   let ts=state.transactions.filter(t=>t.month===state.month);
   if(state.search) {const q=state.search.toLowerCase();ts=ts.filter(t=>(t.merchant+" "+t.description+" "+t.category).toLowerCase().includes(q))}
   if(state.filter!=="all") ts=ts.filter(t=>t.kind===state.filter);
-  ts.sort((a,b)=>b.date.localeCompare(a.date)||b.amount-a.amount);
+  const merchantName=t=>String(t.merchant||t.description||"").toLowerCase();
+  if(state.sort==="oldest") ts.sort((a,b)=>a.date.localeCompare(b.date)||a.amount-b.amount);
+  else if(state.sort==="high") ts.sort((a,b)=>b.amount-a.amount||b.date.localeCompare(a.date));
+  else if(state.sort==="low") ts.sort((a,b)=>a.amount-b.amount||b.date.localeCompare(a.date));
+  else if(state.sort==="az") ts.sort((a,b)=>merchantName(a).localeCompare(merchantName(b))||b.date.localeCompare(a.date));
+  else if(state.sort==="za") ts.sort((a,b)=>merchantName(b).localeCompare(merchantName(a))||b.date.localeCompare(a.date));
+  else ts.sort((a,b)=>b.date.localeCompare(a.date)||b.amount-a.amount);
   el.innerHTML=ts.length?`<div class="card transaction-card">${ts.map(transactionHtml).join("")}</div>`:`<div class="card empty-state"><div class="empty-icon">⌕</div><strong>No matching transactions</strong><span>Try another search, filter, or month.</span></div>`;
   document.querySelectorAll("[data-tx-id]").forEach(b=>b.onclick=()=>showTransactionDetails(b.dataset.txId));
 }
@@ -227,15 +241,40 @@ function showCategoryTransactions(category){
 
 function renderRules(){
   const rules=[...state.rules].sort((a,b)=>a.pattern.localeCompare(b.pattern));
-  return `<div class="section-title">Merchant rules</div>
+  const merchants=[...new Set(state.transactions.map(t=>String(t.merchant||"").trim()).filter(x=>x.length>=2))].sort((a,b)=>a.localeCompare(b));
+  const merchantOptions=merchants.map(m=>`<option value="${esc(m)}">`).join("");
+  return `<div class="page-head"><div><div class="section-kicker">Automation</div><div class="section-title">Auto-Categorization</div><div class="page-subtitle">Rules automatically categorize matching transactions when you import statements.</div></div></div>
     <div class="card">
-      <div class="muted" style="font-size:11px;margin-bottom:10px">Rules are stored only on this device. When a merchant matches a rule, future imports use that category automatically.</div>
-      <div class="row" style="align-items:stretch"><input id="rulePattern" class="input" placeholder="Merchant keyword"><select id="ruleCategory" class="select">${CATEGORIES.map(c=>`<option>${esc(c)}</option>`).join("")}</select><button id="addRuleBtn" class="primary">Add</button></div>
+      <div class="card-title">Merchant rule</div>
+      <div class="muted rule-help">Start typing a merchant and choose a match from your existing transactions.</div>
+      <div class="rule-form">
+        <div class="field"><label for="rulePattern">Merchant / keyword</label><input id="rulePattern" class="input" list="merchantSuggestions" autocomplete="off" placeholder="e.g. SWIGGY"><datalist id="merchantSuggestions">${merchantOptions}</datalist></div>
+        <div class="field"><label for="ruleCategory">Category</label><select id="ruleCategory" class="select">${categoryOptions()}</select></div>
+        <button id="addRuleBtn" class="primary full">＋ Add rule</button>
+      </div>
     </div>
-    <div class="card">${rules.length?rules.map(r=>`<div class="rule"><div><div class="rule-name">${esc(r.pattern)}</div><div class="rule-cat">${esc(r.category)}</div></div><button class="danger" onclick="removeRule('${encodeURIComponent(r.pattern)}')">Delete</button></div>`).join(""):`<div class="empty">No rules.</div>`}</div>
+    <div class="card">
+      <div class="card-title">Your rules <span class="count-badge">${rules.length}</span></div>
+      ${rules.length?rules.map(r=>`<div class="rule"><div><div class="rule-name">${esc(r.pattern)}</div><div class="rule-cat">${CATEGORY_ICONS[r.category]||"•"} ${esc(r.category)}</div></div><button class="danger small" onclick="removeRule('${encodeURIComponent(r.pattern)}')">Delete</button></div>`).join(""):`<div class="empty">No custom rules yet.</div>`}
+    </div>
+    <div class="card"><div class="card-title">Categories</div><div class="muted rule-help">Built-in categories are always available. You can add your own category for rules, review, and future transactions.</div><button class="secondary full" id="addCategoryBtn">＋ Add new category</button></div>
     <div class="card"><div class="card-title">Privacy & backup</div><p class="muted" style="font-size:11px;line-height:1.5">Your transactions are stored in this browser's IndexedDB. Use Export Backup regularly so an accidental browser reset does not remove your local copy.</p>
       <div class="button-row"><button class="secondary" id="exportBtn">Export backup</button><button class="secondary" id="importBackupBtn">Restore backup</button></div>
     </div>`;
+}
+
+async function addCustomCategory(){
+  openModal(`<h2>Add category</h2><p>Create a category once and it will be available in rules and review.</p><div class="field"><label for="newCategoryName">Category name</label><input id="newCategoryName" class="input" maxlength="40" placeholder="e.g. Fitness"></div><div class="button-row"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="saveCustomCategory()">Add category</button></div>`);
+  setTimeout(()=>$("newCategoryName")?.focus(),50);
+}
+async function saveCustomCategory(){
+  const name=$("newCategoryName")?.value.trim();
+  if(!name){toast("Enter a category name.");return}
+  const existing=CATEGORIES.find(c=>c.toLowerCase()===name.toLowerCase());
+  if(existing){toast("That category already exists.");return}
+  CATEGORIES=[...CATEGORIES,name];
+  await dbPut(STORE_META,{key:"customCategories",value:CATEGORIES.filter(c=>!BASE_CATEGORIES.includes(c))});
+  closeModal(); render(); toast(`Category “${name}” added.`);
 }
 
 async function removeRule(encoded){ await dbDelete(STORE_RULES,decodeURIComponent(encoded)); state.rules=await dbGetAll(STORE_RULES); render(); }
@@ -465,12 +504,13 @@ function toast(msg){const x=document.createElement("div");x.className="toast";x.
 
 async function addRule(){
   const pattern=$("rulePattern").value.trim(), category=$("ruleCategory").value;
-  if(!pattern){toast("Enter a merchant keyword.");return}
+  if(!pattern){toast("Choose or enter a merchant keyword.");return}
+  if(!category || category==="__new__"){toast("Choose a category.");return}
   await dbPut(STORE_RULES,{pattern,category}); state.rules=await dbGetAll(STORE_RULES); $("rulePattern").value=""; render(); toast("Rule saved.");
 }
 
 async function exportBackup(){
-  const payload={app:"D's Expense Tracker",version:APP_VERSION,exportedAt:new Date().toISOString(),transactions:state.transactions,rules:state.rules};
+  const payload={app:"D's Expense Tracker",version:APP_VERSION,exportedAt:new Date().toISOString(),transactions:state.transactions,rules:state.rules,customCategories:CATEGORIES.filter(c=>!BASE_CATEGORIES.includes(c))};
   const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
   const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`ds-expense-tracker-backup-${currentMonth()}.json`;a.click();URL.revokeObjectURL(a.href);
 }
@@ -479,6 +519,10 @@ function importBackup(){
   input.onchange=async()=>{const f=input.files[0];if(!f)return;try{
     const data=JSON.parse(await f.text());
     if(!Array.isArray(data.transactions)||!Array.isArray(data.rules))throw new Error("Invalid backup.");
+    if(Array.isArray(data.customCategories)){
+      CATEGORIES=[...new Set([...BASE_CATEGORIES,...data.customCategories.map(x=>String(x).trim()).filter(Boolean)])];
+      await dbPut(STORE_META,{key:"customCategories",value:CATEGORIES.filter(c=>!BASE_CATEGORIES.includes(c))});
+    }
     let added=0;for(const t of data.transactions){if(!state.transactions.some(x=>x.id===t.id)){await dbPut(STORE_TX,t);added++;}}
     for(const r of data.rules) await dbPut(STORE_RULES,r);
     state.transactions=await dbGetAll(STORE_TX);state.rules=await dbGetAll(STORE_RULES);render();toast(`${added} transaction${added===1?"":"s"} restored.`);
