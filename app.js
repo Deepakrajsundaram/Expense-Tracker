@@ -1,7 +1,7 @@
 /* D's Expense Tracker v1.0.0
    Local-first. No bank connection. No server-side transaction storage.
 */
-const APP_VERSION = "1.0.5";
+const APP_VERSION = "1.0.6";
 const DB_NAME = "ds-expense-tracker";
 const DB_VERSION = 1;
 const STORE_TX = "transactions";
@@ -235,9 +235,35 @@ function renderAnalytics(){
 
 function showCategoryTransactions(category){
   const items=state.transactions.filter(t=>t.month===state.month && t.kind==="expense" && t.category===category).sort((a,b)=>b.date.localeCompare(a.date)||b.amount-a.amount);
-  openModal(`<h2>${esc(category)}</h2><p>${items.length} transaction${items.length===1?"":"s"} in ${esc(monthLabel(state.month))}</p><div class="category-transactions">${items.length?items.map(transactionHtml).join(""):`<div class="empty">No transactions in this category.</div>`}</div>`);
+  const hasReview=items.some(t=>t.needsReview);
+  const categoryChoices=CATEGORIES.filter(c=>!['Income','Refund'].includes(c));
+  const itemHtml=t=>{
+    if(!t.needsReview) return transactionHtml(t);
+    return `<div class="review-inline" data-inline-review="${esc(t.id)}">
+      <div class="row"><div class="txn-copy"><div class="txn-name">${esc(t.merchant||t.description)}</div><div class="txn-meta">${fmtDate(t.date)} • Needs review</div></div><div class="review-inline-amount">${money(t.amount)}</div></div>
+      <div class="chips inline-chips">${categoryChoices.map(c=>`<button class="chip" data-inline-category="${esc(t.id)}" data-category-value="${encodeURIComponent(c)}">${CATEGORY_ICONS[c]||""} ${esc(c)}</button>`).join("")}</div>
+    </div>`;
+  };
+  openModal(`<div class="review-top"><div><span class="review-badge">${esc(category)}</span>${hasReview?`<span class="review-badge inline-review-badge">Needs review</span>`:""}</div><span class="review-count">${items.length} transaction${items.length===1?"":"s"}</span></div><h2>${esc(category)}</h2><p>${hasReview?"Select a category directly below any transaction marked Needs review.":`Transactions in ${esc(monthLabel(state.month))}.`}</p><div class="category-transactions">${items.length?items.map(itemHtml).join(""):`<div class="empty">No transactions in this category.</div>`}</div>`);
   document.querySelectorAll("#modalContent [data-tx-id]").forEach(b=>b.onclick=()=>showTransactionDetails(b.dataset.txId));
+  document.querySelectorAll("#modalContent [data-inline-category]").forEach(b=>b.onclick=()=>categorizeInlineTransaction(b.dataset.inlineCategory,decodeURIComponent(b.dataset.categoryValue)));
 }
+
+window.categorizeInlineTransaction=async function(id,category){
+  const t=state.transactions.find(x=>x.id===id);
+  if(!t)return;
+  const updated={...t,category,needsReview:false};
+  await dbPut(STORE_TX,updated);
+  state.transactions=state.transactions.map(x=>x.id===id?updated:x);
+  const pattern=String(updated.merchant||"").trim().toUpperCase();
+  if(pattern.length>=3 && !state.rules.some(r=>r.pattern.toUpperCase()===pattern)){
+    await dbPut(STORE_RULES,{pattern,category});
+    state.rules=await dbGetAll(STORE_RULES);
+  }
+  render();
+  showCategoryTransactions(category);
+  toast(`${updated.merchant||"Transaction"} categorized as ${category}.`);
+};
 
 function renderRules(){
   const rules=[...state.rules].sort((a,b)=>a.pattern.localeCompare(b.pattern));
@@ -434,7 +460,8 @@ function showReview(items,index,decisions){
   const t=items[index];
   const opts=CATEGORIES.filter(c=>!["Income","Refund"].includes(c));
   openModal(`<div class="review-top"><span class="review-badge">Needs review</span><span class="review-count">${index+1} of ${items.length}</span></div><h2>Review transaction</h2><p>Choose a category. Your choice is saved immediately.</p>
-    <div class="review-item"><div class="row"><div><b>${esc(t.merchant)}</b><div class="txn-meta">${fmtDate(t.date)} • ${esc(t.description)}</div></div><div class="review-amount">${money(t.amount)}</div></div>
+    <div class="review-item"><div class="review-merchant-row"><div><div class="review-merchant">${esc(t.merchant||t.description)}</div><div class="txn-meta">${fmtDate(t.date)} • ${esc(t.description)}</div></div><div class="review-amount">${t.kind==="income"?"+":"−"}${money(t.amount)}</div></div>
+      <div class="review-label">Amount</div><div class="review-amount-large">${t.kind==="income"?"+":"−"}${money(t.amount)}</div>
       <div class="chips">${opts.map(c=>`<button class="chip" onclick="chooseReview('${encodeURIComponent(c)}')">${CATEGORY_ICONS[c]||""} ${esc(c)}</button>`).join("")}</div>
       <div class="button-row"><button class="secondary" onclick="chooseReview('Transfer')">Mark as transfer</button><button class="secondary" onclick="chooseReview('Investments')">Investment</button></div>
     </div>`);
