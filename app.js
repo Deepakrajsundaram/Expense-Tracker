@@ -1,7 +1,7 @@
 /* D's Expense Tracker v1.0.0
    Local-first. No bank connection. No server-side transaction storage.
 */
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.0.4";
 const DB_NAME = "ds-expense-tracker";
 const DB_VERSION = 1;
 const STORE_TX = "transactions";
@@ -106,6 +106,7 @@ function render(){
   const views={home:renderHome,transactions:renderTransactions,analytics:renderAnalytics,rules:renderRules};
   $("view").innerHTML=views[state.view]();
   wireView();
+  if(state.view==="transactions") renderTransactionsContent();
 }
 function wireView(){
   const monthSel=$("monthSelect"); if(monthSel) monthSel.onchange=e=>{state.month=e.target.value;render()};
@@ -115,6 +116,7 @@ function wireView(){
   const review=$("reviewAction"); if(review) review.onclick=showReviewFromState;
   const exportBtn=$("exportBtn"); if(exportBtn) exportBtn.onclick=exportBackup;
   const importBackupBtn=$("importBackupBtn"); if(importBackupBtn) importBackupBtn.onclick=importBackup;
+  document.querySelectorAll("[data-category]").forEach(b=>b.onclick=()=>showCategoryTransactions(decodeURIComponent(b.dataset.category)));
   // Settings import-delete buttons are wired when the modal is opened.
   const ruleInput=$("rulePattern"); if(ruleInput) $("addRuleBtn").onclick=addRule;
 }
@@ -153,7 +155,7 @@ function renderHome(){
     <button class="action" id="reviewAction"><strong>⚠ ${reviewCount} to review</strong><span>Review whenever you want</span></button>
   </div>
   <div class="card"><div class="card-title">Where your money went</div>
-    ${cats.length?cats.slice(0,8).map(([c,v])=>`<div class="category-row"><div><span class="cat-dot"></span><span class="cat-name">${esc(c)}</span><div class="progress"><i style="width:${Math.min(100,v/total*100)}%"></i></div></div><div class="cat-amount">${money(v)}</div></div>`).join(""):`<div class="empty"><strong>No expenses yet</strong>Upload your first statement.</div>`}
+    ${cats.length?cats.slice(0,8).map(([c,v])=>`<button class="category-row category-button" data-category="${encodeURIComponent(c)}"><div><span class="cat-dot"></span><span class="cat-name">${esc(c)}</span><div class="progress"><i style="width:${Math.min(100,v/total*100)}%"></i></div></div><div class="cat-amount">${money(v)} <span class="row-chevron">›</span></div></button>`).join(""):`<div class="empty"><strong>No expenses yet</strong>Upload your first statement.</div>`}
   </div>
   <div class="card"><div class="card-title">Money movement</div>
     <div class="stat-grid">
@@ -168,12 +170,14 @@ function renderHome(){
 function transactionHtml(t){
   const icon=CATEGORY_ICONS[t.category]||"•";
   const cls=t.kind==="income"?"credit":"debit";
-  return `<div class="txn"><div class="txn-main"><div class="merchant-icon">${icon}</div><div style="min-width:0"><div class="txn-name">${esc(t.merchant||t.description)}</div><div class="txn-meta">${fmtDate(t.date)} • ${esc(t.category)}${t.needsReview?" • Needs review":""}</div></div><div class="txn-amount ${cls}">${t.kind==="income"?"+":"−"}${money(t.amount)}</div></div></div>`;
+  return `<button class="txn" data-tx-id="${esc(t.id)}"><div class="txn-main"><div class="merchant-icon">${icon}</div><div class="txn-copy"><div class="txn-name">${esc(t.merchant||t.description)}</div><div class="txn-meta">${fmtDate(t.date)} • ${esc(t.category)}${t.needsReview?" • Needs review":""}</div></div><div class="txn-right"><div class="txn-amount ${cls}">${t.kind==="income"?"+":"−"}${money(t.amount)}</div><div class="txn-chevron">›</div></div></div></button>`;
 }
 
 function renderTransactions(){
-  return `<div class="section-title">Transactions</div>
-    <div class="toolbar"><input id="search" class="input" placeholder="Search merchant or description" value="${esc(state.search)}"><select id="filter" class="select" style="max-width:125px"><option value="all" ${state.filter==="all"?"selected":""}>All</option><option value="expense" ${state.filter==="expense"?"selected":""}>Expenses</option><option value="income" ${state.filter==="income"?"selected":""}>Income</option></select></div>
+  const count=state.transactions.filter(t=>t.month===state.month).length;
+  return `<div class="page-head"><div><div class="section-kicker">Activity</div><div class="section-title">Transactions</div><div class="page-subtitle">${count} transaction${count===1?"":"s"} in ${esc(monthLabel(state.month))}</div></div>
+    <select id="monthSelect" class="select month-select">${monthOptions()}</select></div>
+    <div class="toolbar"><input id="search" class="input" placeholder="Search merchant or description" value="${esc(state.search)}"><select id="filter" class="select"><option value="all" ${state.filter==="all"?"selected":""}>All</option><option value="expense" ${state.filter==="expense"?"selected":""}>Expenses</option><option value="income" ${state.filter==="income"?"selected":""}>Income</option></select></div>
     <div id="transactionsContent"></div>`;
 }
 function renderTransactionsContent(){
@@ -182,13 +186,28 @@ function renderTransactionsContent(){
   if(state.search) {const q=state.search.toLowerCase();ts=ts.filter(t=>(t.merchant+" "+t.description+" "+t.category).toLowerCase().includes(q))}
   if(state.filter!=="all") ts=ts.filter(t=>t.kind===state.filter);
   ts.sort((a,b)=>b.date.localeCompare(a.date)||b.amount-a.amount);
-  el.innerHTML=`<div class="card">${ts.length?ts.map(transactionHtml).join(""):`<div class="empty"><strong>No matching transactions</strong>Try another search.</div>`}</div>`;
+  el.innerHTML=ts.length?`<div class="card transaction-card">${ts.map(transactionHtml).join("")}</div>`:`<div class="card empty-state"><div class="empty-icon">⌕</div><strong>No matching transactions</strong><span>Try another search, filter, or month.</span></div>`;
+  document.querySelectorAll("[data-tx-id]").forEach(b=>b.onclick=()=>showTransactionDetails(b.dataset.txId));
+}
+function showTransactionDetails(id){
+  const t=state.transactions.find(x=>x.id===id);
+  if(!t)return;
+  const cls=t.kind==="income"?"credit":"debit";
+  openModal(`<div class="detail-header"><div class="detail-icon">${CATEGORY_ICONS[t.category]||"•"}</div><div><div class="detail-kicker">${t.kind==="income"?"Income":"Expense"}</div><h2>${esc(t.merchant||t.description)}</h2></div></div>
+    <div class="detail-amount ${cls}">${t.kind==="income"?"+":"−"}${money(t.amount)}</div>
+    <div class="detail-list">
+      <div><span>Date</span><b>${fmtDate(t.date)}</b></div>
+      <div><span>Category</span><b>${esc(t.category)}</b></div>
+      <div><span>Description</span><b>${esc(t.description)}</b></div>
+      ${t.needsReview?`<div><span>Status</span><b class="review-badge">Needs review</b></div>`:""}
+    </div>
+    <button class="secondary full" onclick="closeModal()">Done</button>`);
 }
 
 function renderAnalytics(){
   const cats=categoryTotals(state.month), max=cats[0]?.[1]||1, s=summary(state.month);
-  return `<div class="section-title">Analytics</div>
-    <div class="row" style="margin-bottom:12px"><select id="monthSelect" class="select" style="width:auto">${monthOptions()}</select></div>
+  return `<div class="page-head"><div><div class="section-kicker">Insights</div><div class="section-title">Analytics</div><div class="page-subtitle">Tap any category to see its transactions</div></div>
+    <select id="monthSelect" class="select month-select">${monthOptions()}</select></div>
     <div class="stat-grid">
       <div class="stat"><div class="stat-label">Spending</div><div class="stat-value">${money(s.spending)}</div></div>
       <div class="stat"><div class="stat-label">Transactions</div><div class="stat-value">${s.transactions}</div></div>
@@ -196,8 +215,14 @@ function renderAnalytics(){
       <div class="stat"><div class="stat-label">Investments</div><div class="stat-value">${money(s.investment)}</div></div>
     </div>
     <div class="card"><div class="card-title">${monthLabel(state.month)} by category</div>
-      ${cats.length?cats.map(([c,v])=>`<div class="category-row"><div><span class="cat-dot"></span>${esc(c)}<div class="progress"><i style="width:${v/max*100}%"></i></div></div><div class="cat-amount">${money(v)}</div></div>`).join(""):`<div class="empty">No spending data.</div>`}
+      ${cats.length?cats.map(([c,v])=>`<button class="category-row category-button" data-category="${encodeURIComponent(c)}"><div><span class="cat-dot"></span>${esc(c)}<div class="progress"><i style="width:${v/max*100}%"></i></div></div><div class="cat-amount">${money(v)} ›</div></button>`).join(""):`<div class="empty">No spending data.</div>`}
     </div>`;
+}
+
+function showCategoryTransactions(category){
+  const items=state.transactions.filter(t=>t.month===state.month && t.kind==="expense" && t.category===category).sort((a,b)=>b.date.localeCompare(a.date)||b.amount-a.amount);
+  openModal(`<h2>${esc(category)}</h2><p>${items.length} transaction${items.length===1?"":"s"} in ${esc(monthLabel(state.month))}</p><div class="category-transactions">${items.length?items.map(transactionHtml).join(""):`<div class="empty">No transactions in this category.</div>`}</div>`);
+  document.querySelectorAll("#modalContent [data-tx-id]").forEach(b=>b.onclick=()=>showTransactionDetails(b.dataset.txId));
 }
 
 function renderRules(){
@@ -366,10 +391,10 @@ function showReviewFromState(){
   showReview(items,0,[]);
 }
 function showReview(items,index,decisions){
-  if(index>=items.length){finishReview(items,decisions);return}
+  if(index>=items.length){return}
   const t=items[index];
   const opts=CATEGORIES.filter(c=>!["Income","Refund"].includes(c));
-  openModal(`<h2>Review transaction</h2><p>${index+1} of ${items.length}</p>
+  openModal(`<div class="review-top"><span class="review-badge">Needs review</span><span class="review-count">${index+1} of ${items.length}</span></div><h2>Review transaction</h2><p>Choose a category. Your choice is saved immediately.</p>
     <div class="review-item"><div class="row"><div><b>${esc(t.merchant)}</b><div class="txn-meta">${fmtDate(t.date)} • ${esc(t.description)}</div></div><div class="review-amount">${money(t.amount)}</div></div>
       <div class="chips">${opts.map(c=>`<button class="chip" onclick="chooseReview('${encodeURIComponent(c)}')">${CATEGORY_ICONS[c]||""} ${esc(c)}</button>`).join("")}</div>
       <div class="button-row"><button class="secondary" onclick="chooseReview('Transfer')">Mark as transfer</button><button class="secondary" onclick="chooseReview('Investments')">Investment</button></div>
@@ -379,34 +404,26 @@ function showReview(items,index,decisions){
 window.chooseReview=async function(encoded){
   const c=decodeURIComponent(encoded), x=window.__review, t=x.items[x.index];
   const updated={...t,category:c,needsReview:false};
+  await dbPut(STORE_TX,updated);
   x.decisions.push(updated);
-  // For imported items, keep them in memory only until all reviews are done.
-  showReview(x.items,x.index+1,x.decisions);
-};
-async function finishReview(items,decisions){
-  const decisionMap=new Map(decisions.map(x=>[x.id,x]));
-  let added=0, rulesLearned=0;
-  for(const raw of items){
-    let t=decisionMap.get(raw.id)||raw;
-    if(raw.possibleDuplicateOf && !decisionMap.has(raw.id)) continue;
-    if(raw.possibleDuplicateOf && decisionMap.has(raw.id)) {
-      const existing=state.transactions.find(x=>x.id===raw.possibleDuplicateOf);
-      if(existing && existing.category===t.category) continue;
-    }
-    if(!t.category) t.category="Other";
-    await dbPut(STORE_TX,t); added++;
-    // Learn only from explicit review of merchant.
-    if(raw.needsReview && decisionMap.has(raw.id) && raw.merchant){
-      const pattern=raw.merchant.trim().toUpperCase();
-      if(pattern.length>=3 && !state.rules.some(r=>r.pattern.toUpperCase()===pattern)){
-        await dbPut(STORE_RULES,{pattern,category:t.category}); rulesLearned++;
-      }
+  state.transactions=state.transactions.map(row=>row.id===updated.id?updated:row);
+  if(t.merchant){
+    const pattern=t.merchant.trim().toUpperCase();
+    if(pattern.length>=3 && !state.rules.some(r=>r.pattern.toUpperCase()===pattern)){
+      await dbPut(STORE_RULES,{pattern,category:c});
+      state.rules=await dbGetAll(STORE_RULES);
     }
   }
-  state.transactions=await dbGetAll(STORE_TX); state.rules=await dbGetAll(STORE_RULES); state.importBatch=null;
-  closeModal(); state.view="home"; render();
-  toast(`${added} new transaction${added===1?"":"s"} imported${rulesLearned?` • ${rulesLearned} merchant rule${rulesLearned===1?"":"s"} learned`:""}.`);
-}
+  if(x.index+1>=x.items.length){
+    closeModal();
+    state.view="home";
+    render();
+    toast("Review complete. Your transactions are updated.");
+    return;
+  }
+  showReview(x.items,x.index+1,x.decisions);
+};
+
 
 function showSettings(){
   const imports=[...new Set(state.transactions.map(t=>t.sourceFile).filter(Boolean))]
