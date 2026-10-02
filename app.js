@@ -115,6 +115,7 @@ function wireView(){
   const review=$("reviewAction"); if(review) review.onclick=showReviewFromState;
   const exportBtn=$("exportBtn"); if(exportBtn) exportBtn.onclick=exportBackup;
   const importBackupBtn=$("importBackupBtn"); if(importBackupBtn) importBackupBtn.onclick=importBackup;
+  // Settings import-delete buttons are wired when the modal is opened.
   const ruleInput=$("rulePattern"); if(ruleInput) $("addRuleBtn").onclick=addRule;
 }
 
@@ -408,11 +409,38 @@ async function finishReview(items,decisions){
 }
 
 function showSettings(){
+  const imports=[...new Set(state.transactions.map(t=>t.sourceFile).filter(Boolean))]
+    .map(filename=>({filename,count:state.transactions.filter(t=>t.sourceFile===filename).length}))
+    .sort((a,b)=>a.filename.localeCompare(b.filename));
+  const importHtml=imports.length ? imports.map(x=>`<div class="import-history-row">
+      <div class="import-history-info"><b>${esc(x.filename)}</b><span>${x.count} transaction${x.count===1?"":"s"}</span></div>
+      <button class="danger small" data-delete-import="${esc(x.filename)}">Delete</button>
+    </div>`).join("") : `<p class="muted">No imported statements are stored yet.</p>`;
   openModal(`<h2>Settings</h2><p><b>D's Expense Tracker v${APP_VERSION}</b></p>
     <div class="card"><div class="card-title">Privacy</div><p>Statements are parsed in this browser. There is no bank connection and this version does not send transaction data to a backend.</p></div>
-    <div class="card"><div class="card-title">Data safety</div><p>Use Export Backup before clearing browser data or changing devices. Future versions must migrate this local database rather than replacing it.</p></div>
+    <div class="card"><div class="card-title">Imported statements</div>
+      <p class="muted">Delete a statement here if you want to import that same file again. This deletes only transactions originally imported from that file.</p>
+      <div class="import-history">${importHtml}</div>
+    </div>
+    <div class="card"><div class="card-title">Data safety</div><p>Use Export Backup before clearing browser data or changing devices. Deleting an imported statement cannot be undone unless you have a backup.</p></div>
     <button class="secondary full" onclick="closeModal()">Done</button>`);
+  document.querySelectorAll("[data-delete-import]").forEach(b=>b.onclick=()=>deleteImportedStatement(b.dataset.deleteImport));
 }
+
+async function deleteImportedStatement(filename){
+  const matching=state.transactions.filter(t=>t.sourceFile===filename);
+  if(!matching.length){toast("No transactions found for this statement.");return}
+  const ok=confirm(`Delete ${matching.length} transaction${matching.length===1?"":"s"} imported from\n\n${filename}?\n\nThis cannot be undone unless you have a backup.`);
+  if(!ok)return;
+  for(const t of matching) await dbDelete(STORE_TX,t.id);
+  state.transactions=await dbGetAll(STORE_TX);
+  const months=[...new Set(state.transactions.map(t=>t.month).filter(Boolean))].sort().reverse();
+  state.month=months[0]||currentMonth();
+  showSettings();
+  render();
+  toast(`${matching.length} transaction${matching.length===1?"":"s"} deleted.`);
+}
+
 
 function openModal(html){$("modalContent").innerHTML=html;$("modal").classList.remove("hidden");$("modal").setAttribute("aria-hidden","false")}
 function closeModal(){ $("modal").classList.add("hidden");$("modal").setAttribute("aria-hidden","true");window.__review=null; }
