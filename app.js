@@ -1,7 +1,7 @@
-/* D's Expense Tracker v1.0.7
+/* D's Expense Tracker v1.0.10
    Local-first. No bank connection. No server-side transaction storage.
 */
-const APP_VERSION = "1.0.8";
+const APP_VERSION = "1.0.10";
 const DB_NAME = "ds-expense-tracker";
 const DB_VERSION = 1;
 const STORE_TX = "transactions";
@@ -174,7 +174,7 @@ function wireView(){
   const filter=$("filter"); if(filter) filter.onchange=e=>{state.filter=e.target.value;renderTransactionsContent()};
   const sortSelect=$("sortSelect"); if(sortSelect) sortSelect.onchange=e=>{state.sort=e.target.value;renderTransactionsContent()};
   const dateFilter=$("dateFilter"); if(dateFilter) dateFilter.onchange=e=>{state.dateFilter=e.target.value;renderTransactionsContent()};
-  const clearDate=$("clearDate"); if(clearDate) clearDate.onclick=()=>{state.dateFilter="";renderTransactionsContent()};
+  const clearDate=$("clearDate"); if(clearDate) clearDate.onclick=()=>{state.dateFilter=""; const input=$("dateFilter"); if(input) input.value=""; renderTransactionsContent(); wireView();};
   const upload=$("uploadAction"); if(upload) upload.onclick=openFilePicker;
   const review=$("reviewAction"); if(review) review.onclick=showReviewFromState;
   const exportBtn=$("exportBtn"); if(exportBtn) exportBtn.onclick=exportBackup;
@@ -248,14 +248,13 @@ function renderTransactions(){
   const dateText=state.dateFilter?` on ${fmtDate(state.dateFilter)}`:` in ${esc(monthLabel(state.month))}`;
   return `<div class="page-head"><div><div class="section-kicker">Activity</div><div class="section-title">Transactions</div><div class="page-subtitle">${count} transaction${count===1?"":"s"}${dateText}</div></div>
     <select id="monthSelect" class="select month-select">${monthOptions()}</select></div>
-    <div class="date-filter-row"><div class="field date-field"><label for="dateFilter">Exact date</label><input id="dateFilter" class="input" type="date" value="${esc(state.dateFilter)}"></div><button id="clearDate" class="secondary clear-date" ${state.dateFilter?"":"disabled"}>Clear</button></div>
+    <div class="date-filter-row"><div class="field date-field"><label for="dateFilter">Exact date</label><input id="dateFilter" class="input" type="date" value="${esc(state.dateFilter)}"></div><button id="clearDate" class="secondary clear-date">Clear</button></div>
     <div class="toolbar"><input id="search" class="input" placeholder="Search merchant or description" value="${esc(state.search)}"><select id="filter" class="select"><option value="all" ${state.filter==="all"?"selected":""}>All</option><option value="expense" ${state.filter==="expense"?"selected":""}>Expenses</option><option value="income" ${state.filter==="income"?"selected":""}>Income</option></select><select id="sortSelect" class="select"><option value="newest" ${state.sort==="newest"?"selected":""}>Newest</option><option value="oldest" ${state.sort==="oldest"?"selected":""}>Oldest</option><option value="high" ${state.sort==="high"?"selected":""}>Highest amount</option><option value="low" ${state.sort==="low"?"selected":""}>Lowest amount</option><option value="az" ${state.sort==="az"?"selected":""}>A → Z</option><option value="za" ${state.sort==="za"?"selected":""}>Z → A</option></select></div>
     <div id="transactionsContent"></div>`;
 }
 function renderTransactionsContent(){
   const el=$("transactionsContent"); if(!el)return;
-  let ts=activeTransactions().filter(t=>t.month===state.month);
-  if(state.dateFilter) ts=ts.filter(t=>t.date===state.dateFilter);
+  let ts=state.dateFilter ? activeTransactions().filter(t=>t.date===state.dateFilter) : activeTransactions().filter(t=>t.month===state.month);
   if(state.search) {const q=state.search.toLowerCase();ts=ts.filter(t=>(t.merchant+" "+t.description+" "+t.category).toLowerCase().includes(q))}
   if(state.filter!=="all") ts=ts.filter(t=>t.kind===state.filter);
   const merchantName=t=>String(t.merchant||t.description||"").toLowerCase();
@@ -287,12 +286,32 @@ function showTransactionDetails(id){
     <div class="detail-amount ${cls}">${t.kind==="income"?"+":"−"}${money(t.amount)}</div>
     <div class="detail-list">
       <div><span>Date</span><b>${fmtDate(t.date)}</b></div>
-      <div><span>Category</span><b>${esc(t.category)}</b></div>
+      <button class="detail-edit-row" type="button" onclick="editTransactionCategory('${encodeURIComponent(t.id)}')"><span>Category</span><b>${CATEGORY_ICONS[t.category]||"•"} ${esc(t.category)} <span class="row-chevron">›</span></b></button>
       <div><span>Description</span><b>${esc(t.description)}</b></div>
-      ${t.needsReview?`<div><span>Status</span><b class="review-badge">Needs review</b></div>`:""}
+      <button class="detail-edit-row status-edit-row" type="button" onclick="editTransactionCategory('${encodeURIComponent(t.id)}')"><span>Status</span><b class="${t.needsReview?"review-badge":"status-badge"}">${t.needsReview?"Needs review":"Reviewed"} <span class="row-chevron">›</span></b></button>
     </div>
     <div class="button-row"><button class="secondary" onclick="closeModal()">Done</button><button class="danger" onclick="deleteTransaction('${encodeURIComponent(t.id)}')">Delete</button></div>`);
 }
+
+window.editTransactionCategory=async function(encodedId){
+  const id=decodeURIComponent(encodedId);
+  const t=state.transactions.find(x=>x.id===id);
+  if(!t)return;
+  const choices=t.kind==="income" ? CATEGORIES : CATEGORIES.filter(c=>!['Income','Refund'].includes(c));
+  openModal(`<div class="review-top"><span class="review-badge">${t.needsReview?"Needs review":"Category"}</span><span class="review-count">${money(t.amount)}</span></div><h2>${t.needsReview?"Select category":"Change category"}</h2><p>${t.needsReview?"This transaction needs a category. Select one below.":esc(t.merchant||t.description)}</p><div class="chips category-picker">${choices.map(c=>`<button class="chip ${c===t.category?"selected":""}" type="button" onclick="saveTransactionCategory('${encodeURIComponent(id)}','${encodeURIComponent(c)}')">${CATEGORY_ICONS[c]||"•"} ${esc(c)}</button>`).join("")}</div><div class="button-row"><button class="secondary" onclick="showTransactionDetails('${encodeURIComponent(id)}')">Cancel</button></div>`);
+};
+window.saveTransactionCategory=async function(encodedId,encodedCategory){
+  const id=decodeURIComponent(encodedId), category=decodeURIComponent(encodedCategory);
+  const t=state.transactions.find(x=>x.id===id);
+  if(!t)return;
+  const updated={...t,category,needsReview:false};
+  await dbPut(STORE_TX,updated);
+  state.transactions=state.transactions.map(x=>x.id===id?updated:x);
+  closeModal();
+  render();
+  showTransactionDetails(id);
+  toast(`Category changed to ${category}.`);
+};
 
 function renderAnalytics(){
   const cats=categoryTotals(state.month), max=cats[0]?.[1]||1, s=summary(state.month);
