@@ -2,7 +2,7 @@
 
 A mobile-first, local-first personal expense tracker for GitHub Pages.
 
-## V1 goals
+## V1.0.7 goals
 
 - Upload CSV, XLS, or XLSX bank statements.
 - Process statements in the browser.
@@ -15,6 +15,8 @@ A mobile-first, local-first personal expense tracker for GitHub Pages.
 - Keep transactions in IndexedDB on the device/browser.
 - Export/import a JSON backup.
 - iPhone-first dark UI.
+- Salary-based monthly cycles: salary transactions starting with `NEFT` and containing `ACCENTURE SOLUTIONS PVT LTD` start the following month cycle.
+- Transaction dates remain unchanged; only dashboard/month grouping changes.
 
 ## Important privacy design
 

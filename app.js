@@ -1,7 +1,7 @@
-/* D's Expense Tracker v1.0.0
+/* D's Expense Tracker v1.0.7
    Local-first. No bank connection. No server-side transaction storage.
 */
-const APP_VERSION = "1.0.6";
+const APP_VERSION = "1.0.7";
 const DB_NAME = "ds-expense-tracker";
 const DB_VERSION = 1;
 const STORE_TX = "transactions";
@@ -47,6 +47,55 @@ const fmtDate = iso => { if(!iso) return ""; const d=new Date(iso+"T00:00:00"); 
 const monthKey = iso => (iso||"").slice(0,7);
 const currentMonth = () => new Date().toISOString().slice(0,7);
 const monthLabel = key => { const d=new Date(key+"-01T00:00:00"); return d.toLocaleDateString("en-IN",{month:"long",year:"numeric"}); };
+const SALARY_PREFIX = "NEFT";
+const SALARY_MATCH = "ACCENTURE SOLUTIONS PVT LTD";
+function isSalaryTransaction(t){
+  if(!t || t.kind!=="income") return false;
+  const d=String(t.description||"").trim().toUpperCase();
+  return d.startsWith(SALARY_PREFIX) && d.includes(SALARY_MATCH);
+}
+function salaryDates(){
+  return [...new Set(state.transactions.filter(isSalaryTransaction).map(t=>t.date).filter(Boolean))].sort();
+}
+function nextMonthKeyFromDate(iso){
+  const d=new Date(iso+"T00:00:00"); d.setDate(1); d.setMonth(d.getMonth()+1);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`;
+}
+function addDaysIso(iso,days){
+  const d=new Date(iso+"T00:00:00"); d.setDate(d.getDate()+days);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+}
+function recomputeCycleMonths(){
+  const salaries=salaryDates();
+  for(const t of state.transactions){
+    let assigned=monthKey(t.date);
+    for(const sd of salaries){
+      if(sd<=t.date) assigned=nextMonthKeyFromDate(sd); else break;
+    }
+    t.month=assigned;
+  }
+  return salaries;
+}
+function cycleRange(month){
+  const salaries=salaryDates();
+  const start=salaries.find(sd=>nextMonthKeyFromDate(sd)===month);
+  if(!start) return null;
+  const idx=salaries.indexOf(start);
+  const next=salaries[idx+1];
+  return {start,end:next?addDaysIso(next,-1):null};
+}
+function cycleRangeLabel(month){
+  const r=cycleRange(month);
+  if(!r) return "Calendar month";
+  return `${fmtDate(r.start)} – ${r.end?fmtDate(r.end):"current"}`;
+}
+function cycleSettingsModal(){
+  const count=salaryDates().length;
+  openModal(`<h2>Monthly cycle</h2><p>Your monthly cycle is based on the actual salary credit date. The app detects salary transactions that start with <b>${esc(SALARY_PREFIX)}</b> and contain <b>${esc(SALARY_MATCH)}</b>.</p>
+    <div class="card"><div class="card-title">Current method</div><div class="stat"><div class="stat-label">Salary-based cycle</div><div class="stat-value">${count?"Active":"Waiting for salary"}</div></div><p class="muted">When a salary is detected, that date starts the following month's cycle. Transaction dates themselves are never changed.</p></div>
+    <div class="card"><div class="card-title">Example</div><p class="muted">If salary is credited on Sep 30, the October cycle starts Sep 30. If the next salary arrives on Oct 30, the October cycle ends Oct 29.</p></div>
+    <button class="primary full" onclick="closeModal()">Done</button>`);
+}
 
 function openDB(){
   if(dbPromise) return dbPromise;
@@ -94,6 +143,8 @@ async function init(){
     for(const [pattern,category] of DEFAULT_RULES) await dbPut(STORE_RULES,{pattern,category});
     state.rules=await dbGetAll(STORE_RULES);
   }
+  const salaries = recomputeCycleMonths();
+  for(const t of state.transactions) await dbPut(STORE_TX,t);
   const months = [...new Set(state.transactions.map(t=>t.month).filter(Boolean))].sort().reverse();
   state.month = months[0] || currentMonth();
   bindNav();
@@ -118,6 +169,7 @@ function render(){
 }
 function wireView(){
   const monthSel=$("monthSelect"); if(monthSel) monthSel.onchange=e=>{state.month=e.target.value;render()};
+  const cycleBtn=$("cycleSettingsBtn"); if(cycleBtn) cycleBtn.onclick=cycleSettingsModal;
   const search=$("search"); if(search) search.oninput=e=>{state.search=e.target.value;renderTransactionsContent()};
   const filter=$("filter"); if(filter) filter.onchange=e=>{state.filter=e.target.value;renderTransactionsContent()};
   const sortSelect=$("sortSelect"); if(sortSelect) sortSelect.onchange=e=>{state.sort=e.target.value;renderTransactionsContent()};
@@ -157,9 +209,11 @@ function renderHome(){
   const s=summary(state.month), cats=categoryTotals(state.month), total=s.spending||1;
   const recent=state.transactions.filter(t=>t.month===state.month).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5);
   const reviewCount=state.transactions.filter(t=>t.needsReview).length;
+  const range=cycleRangeLabel(state.month);
   return `<section class="hero">
     <div class="row"><div><div class="eyebrow">Monthly spending</div><div class="hero-amount">${money(s.spending)}</div><div class="muted" style="font-size:11px">${s.transactions} transactions</div></div>
     <select id="monthSelect" class="select" style="width:auto;min-width:140px">${monthOptions()}</select></div>
+    <div class="cycle-control"><span><b>${esc(monthLabel(state.month))}</b> · ${esc(range)}</span><button id="cycleSettingsBtn" class="cycle-change">Change</button></div>
   </section>
   <div class="card"><div class="card-title">Money movement</div>
     <div class="stat-grid">
@@ -442,7 +496,10 @@ async function startImportReview(){
 
   state.transactions=await dbGetAll(STORE_TX);
   state.rules=await dbGetAll(STORE_RULES);
-  const importedMonths=items.map(t=>t.month).filter(Boolean).sort().reverse();
+  recomputeCycleMonths();
+  for(const t of state.transactions) await dbPut(STORE_TX,t);
+  const importedIds=new Set(items.map(t=>t.id));
+  const importedMonths=state.transactions.filter(t=>importedIds.has(t.id)).map(t=>t.month).filter(Boolean).sort().reverse();
   state.month=importedMonths[0] || state.month;
   state.importBatch=null;
   closeModal();
@@ -517,6 +574,8 @@ async function deleteImportedStatement(filename){
   if(!ok)return;
   for(const t of matching) await dbDelete(STORE_TX,t.id);
   state.transactions=await dbGetAll(STORE_TX);
+  recomputeCycleMonths();
+  for(const t of state.transactions) await dbPut(STORE_TX,t);
   const months=[...new Set(state.transactions.map(t=>t.month).filter(Boolean))].sort().reverse();
   state.month=months[0]||currentMonth();
   showSettings();
@@ -552,7 +611,7 @@ function importBackup(){
     }
     let added=0;for(const t of data.transactions){if(!state.transactions.some(x=>x.id===t.id)){await dbPut(STORE_TX,t);added++;}}
     for(const r of data.rules) await dbPut(STORE_RULES,r);
-    state.transactions=await dbGetAll(STORE_TX);state.rules=await dbGetAll(STORE_RULES);render();toast(`${added} transaction${added===1?"":"s"} restored.`);
+    state.transactions=await dbGetAll(STORE_TX);state.rules=await dbGetAll(STORE_RULES);recomputeCycleMonths();for(const t of state.transactions) await dbPut(STORE_TX,t);render();toast(`${added} transaction${added===1?"":"s"} restored.`);
   }catch(e){toast(e.message||"Could not restore backup.")}};
   input.click();
 }
