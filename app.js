@@ -1,7 +1,7 @@
 /* D's Expense Tracker v1.0.7
    Local-first. No bank connection. No server-side transaction storage.
 */
-const APP_VERSION = "1.0.7";
+const APP_VERSION = "1.0.8";
 const DB_NAME = "ds-expense-tracker";
 const DB_VERSION = 1;
 const STORE_TX = "transactions";
@@ -35,7 +35,7 @@ const DEFAULT_RULES = [
 ];
 
 let CATEGORIES = [...BASE_CATEGORIES];
-let state = { view:"home", transactions:[], rules:[], month:null, importBatch:null, search:"", filter:"all", sort:"newest" };
+let state = { view:"home", transactions:[], rules:[], month:null, importBatch:null, search:"", filter:"all", sort:"newest", dateFilter:"" };
 let dbPromise;
 
 const $ = id => document.getElementById(id);
@@ -55,7 +55,7 @@ function isSalaryTransaction(t){
   return d.startsWith(SALARY_PREFIX) && d.includes(SALARY_MATCH);
 }
 function salaryDates(){
-  return [...new Set(state.transactions.filter(isSalaryTransaction).map(t=>t.date).filter(Boolean))].sort();
+  return [...new Set(state.transactions.filter(t=>!t.deletedAt && isSalaryTransaction(t)).map(t=>t.date).filter(Boolean))].sort();
 }
 function nextMonthKeyFromDate(iso){
   const d=new Date(iso+"T00:00:00"); d.setDate(1); d.setMonth(d.getMonth()+1);
@@ -162,7 +162,7 @@ function bindNav(){
 
 function render(){
   document.querySelectorAll(".nav-btn").forEach(b=>b.classList.toggle("active",b.dataset.view===state.view));
-  const views={home:renderHome,transactions:renderTransactions,analytics:renderAnalytics,rules:renderRules};
+  const views={home:renderHome,transactions:renderTransactions,deleted:renderDeleted,rules:renderRules};
   $("view").innerHTML=views[state.view]();
   wireView();
   if(state.view==="transactions") renderTransactionsContent();
@@ -173,33 +173,40 @@ function wireView(){
   const search=$("search"); if(search) search.oninput=e=>{state.search=e.target.value;renderTransactionsContent()};
   const filter=$("filter"); if(filter) filter.onchange=e=>{state.filter=e.target.value;renderTransactionsContent()};
   const sortSelect=$("sortSelect"); if(sortSelect) sortSelect.onchange=e=>{state.sort=e.target.value;renderTransactionsContent()};
+  const dateFilter=$("dateFilter"); if(dateFilter) dateFilter.onchange=e=>{state.dateFilter=e.target.value;renderTransactionsContent()};
+  const clearDate=$("clearDate"); if(clearDate) clearDate.onclick=()=>{state.dateFilter="";renderTransactionsContent()};
   const upload=$("uploadAction"); if(upload) upload.onclick=openFilePicker;
   const review=$("reviewAction"); if(review) review.onclick=showReviewFromState;
   const exportBtn=$("exportBtn"); if(exportBtn) exportBtn.onclick=exportBackup;
   const importBackupBtn=$("importBackupBtn"); if(importBackupBtn) importBackupBtn.onclick=importBackup;
   document.querySelectorAll("[data-category]").forEach(b=>b.onclick=()=>showCategoryTransactions(decodeURIComponent(b.dataset.category)));
+  document.querySelectorAll(".swipe-row").forEach(enableSwipeDelete);
+  document.querySelectorAll("[data-tx-id]").forEach(b=>b.onclick=()=>showTransactionDetails(b.dataset.txId));
   // Settings import-delete buttons are wired when the modal is opened.
   const ruleInput=$("rulePattern"); if(ruleInput) $("addRuleBtn").onclick=addRule;
   const addCategoryBtn=$("addCategoryBtn"); if(addCategoryBtn) addCategoryBtn.onclick=addCustomCategory;
   const ruleCategory=$("ruleCategory"); if(ruleCategory) ruleCategory.onchange=async e=>{if(e.target.value==="__new__"){e.target.value=CATEGORIES[0];await addCustomCategory();}};
 }
 
+function activeTransactions(){ return state.transactions.filter(t=>!t.deletedAt); }
+
 function monthOptions(){
-  const months=[...new Set(state.transactions.map(t=>t.month))].filter(Boolean).sort().reverse();
+  const months=[...new Set(activeTransactions().map(t=>t.month))].filter(Boolean).sort().reverse();
   if(!months.includes(state.month)) months.unshift(state.month);
   return months.map(m=>`<option value="${m}" ${m===state.month?"selected":""}>${monthLabel(m)}</option>`).join("");
 }
 
 function spendingFor(month){
-  return state.transactions.filter(t=>t.month===month && t.kind==="expense");
+  return activeTransactions().filter(t=>t.month===month && t.kind==="expense");
 }
 function summary(month){
-  const ts=state.transactions.filter(t=>t.month===month);
+  const ts=activeTransactions().filter(t=>t.month===month);
   const spending=ts.filter(t=>t.kind==="expense").reduce((a,t)=>a+t.amount,0);
   const income=ts.filter(t=>t.kind==="income").reduce((a,t)=>a+t.amount,0);
   const investment=ts.filter(t=>t.category==="Investments").reduce((a,t)=>a+t.amount,0);
   const transfers=ts.filter(t=>t.category==="Transfer").reduce((a,t)=>a+t.amount,0);
-  return {spending,income,investment,transfers,transactions:ts.length};
+  const remaining=income-spending;
+  return {spending,income,investment,transfers,remaining,transactions:ts.length};
 }
 function categoryTotals(month){
   const out={}; for(const t of spendingFor(month)) out[t.category]=(out[t.category]||0)+t.amount;
@@ -207,8 +214,8 @@ function categoryTotals(month){
 }
 function renderHome(){
   const s=summary(state.month), cats=categoryTotals(state.month), total=s.spending||1;
-  const recent=state.transactions.filter(t=>t.month===state.month).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5);
-  const reviewCount=state.transactions.filter(t=>t.needsReview).length;
+  const recent=activeTransactions().filter(t=>t.month===state.month).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5);
+  const reviewCount=activeTransactions().filter(t=>t.needsReview).length;
   const range=cycleRangeLabel(state.month);
   return `<section class="hero">
     <div class="row"><div><div class="eyebrow">Monthly spending</div><div class="hero-amount">${money(s.spending)}</div><div class="muted" style="font-size:11px">${s.transactions} transactions</div></div>
@@ -218,9 +225,9 @@ function renderHome(){
   <div class="card"><div class="card-title">Money movement</div>
     <div class="stat-grid">
       <div class="stat"><div class="stat-label">Income</div><div class="stat-value">${money(s.income)}</div></div>
+      <div class="stat"><div class="stat-label">Expenses</div><div class="stat-value">${money(s.spending)}</div></div>
+      <div class="stat"><div class="stat-label">Remaining</div><div class="stat-value ${s.remaining<0?"negative":"positive"}">${money(s.remaining)}</div></div>
       <div class="stat"><div class="stat-label">Investments</div><div class="stat-value">${money(s.investment)}</div></div>
-      <div class="stat"><div class="stat-label">Transfers</div><div class="stat-value">${money(s.transfers)}</div></div>
-      <div class="stat"><div class="stat-label">Actual spending</div><div class="stat-value">${money(s.spending)}</div></div>
     </div>
   </div>
   <div class="card"><div class="card-title">Where your money went</div>
@@ -232,19 +239,23 @@ function renderHome(){
 function transactionHtml(t){
   const icon=CATEGORY_ICONS[t.category]||"•";
   const cls=t.kind==="income"?"credit":"debit";
-  return `<button class="txn" data-tx-id="${esc(t.id)}"><div class="txn-main"><div class="merchant-icon">${icon}</div><div class="txn-copy"><div class="txn-name">${esc(t.merchant||t.description)}</div><div class="txn-meta">${fmtDate(t.date)} • ${esc(t.category)}${t.needsReview?" • Needs review":""}</div></div><div class="txn-right"><div class="txn-amount ${cls}">${t.kind==="income"?"+":"−"}${money(t.amount)}</div><div class="txn-chevron">›</div></div></div></button>`;
+  return `<div class="swipe-row"><div class="swipe-content"><button class="txn" data-tx-id="${esc(t.id)}"><div class="txn-main"><div class="merchant-icon">${icon}</div><div class="txn-copy"><div class="txn-name">${esc(t.merchant||t.description)}</div><div class="txn-meta">${fmtDate(t.date)} • ${esc(t.category)}${t.needsReview?" • Needs review":""}</div></div><div class="txn-right"><div class="txn-amount ${cls}">${t.kind==="income"?"+":"−"}${money(t.amount)}</div><div class="txn-chevron">›</div></div></div></button></div><div class="swipe-actions"><button class="danger swipe-delete" onclick="deleteTransaction('${encodeURIComponent(t.id)}')">Delete</button></div></div>`;
 }
 
 function renderTransactions(){
-  const count=state.transactions.filter(t=>t.month===state.month).length;
-  return `<div class="page-head"><div><div class="section-kicker">Activity</div><div class="section-title">Transactions</div><div class="page-subtitle">${count} transaction${count===1?"":"s"} in ${esc(monthLabel(state.month))}</div></div>
+  const base=activeTransactions().filter(t=>t.month===state.month);
+  const count=state.dateFilter?activeTransactions().filter(t=>t.date===state.dateFilter).length:base.length;
+  const dateText=state.dateFilter?` on ${fmtDate(state.dateFilter)}`:` in ${esc(monthLabel(state.month))}`;
+  return `<div class="page-head"><div><div class="section-kicker">Activity</div><div class="section-title">Transactions</div><div class="page-subtitle">${count} transaction${count===1?"":"s"}${dateText}</div></div>
     <select id="monthSelect" class="select month-select">${monthOptions()}</select></div>
+    <div class="date-filter-row"><div class="field date-field"><label for="dateFilter">Exact date</label><input id="dateFilter" class="input" type="date" value="${esc(state.dateFilter)}"></div><button id="clearDate" class="secondary clear-date" ${state.dateFilter?"":"disabled"}>Clear</button></div>
     <div class="toolbar"><input id="search" class="input" placeholder="Search merchant or description" value="${esc(state.search)}"><select id="filter" class="select"><option value="all" ${state.filter==="all"?"selected":""}>All</option><option value="expense" ${state.filter==="expense"?"selected":""}>Expenses</option><option value="income" ${state.filter==="income"?"selected":""}>Income</option></select><select id="sortSelect" class="select"><option value="newest" ${state.sort==="newest"?"selected":""}>Newest</option><option value="oldest" ${state.sort==="oldest"?"selected":""}>Oldest</option><option value="high" ${state.sort==="high"?"selected":""}>Highest amount</option><option value="low" ${state.sort==="low"?"selected":""}>Lowest amount</option><option value="az" ${state.sort==="az"?"selected":""}>A → Z</option><option value="za" ${state.sort==="za"?"selected":""}>Z → A</option></select></div>
     <div id="transactionsContent"></div>`;
 }
 function renderTransactionsContent(){
   const el=$("transactionsContent"); if(!el)return;
-  let ts=state.transactions.filter(t=>t.month===state.month);
+  let ts=activeTransactions().filter(t=>t.month===state.month);
+  if(state.dateFilter) ts=ts.filter(t=>t.date===state.dateFilter);
   if(state.search) {const q=state.search.toLowerCase();ts=ts.filter(t=>(t.merchant+" "+t.description+" "+t.category).toLowerCase().includes(q))}
   if(state.filter!=="all") ts=ts.filter(t=>t.kind===state.filter);
   const merchantName=t=>String(t.merchant||t.description||"").toLowerCase();
@@ -256,7 +267,18 @@ function renderTransactionsContent(){
   else ts.sort((a,b)=>b.date.localeCompare(a.date)||b.amount-a.amount);
   el.innerHTML=ts.length?`<div class="card transaction-card">${ts.map(transactionHtml).join("")}</div>`:`<div class="card empty-state"><div class="empty-icon">⌕</div><strong>No matching transactions</strong><span>Try another search, filter, or month.</span></div>`;
   document.querySelectorAll("[data-tx-id]").forEach(b=>b.onclick=()=>showTransactionDetails(b.dataset.txId));
+  document.querySelectorAll(".swipe-row").forEach(enableSwipeDelete);
 }
+function enableSwipeDelete(row){
+  let startX=0,startY=0,dx=0,moved=false;
+  const content=row.querySelector(".swipe-content");
+  const actions=row.querySelector(".swipe-actions");
+  if(!content||!actions)return;
+  row.addEventListener("touchstart",e=>{if(e.touches.length!==1)return;startX=e.touches[0].clientX;startY=e.touches[0].clientY;dx=0;moved=false;content.style.transition="none"},{passive:true});
+  row.addEventListener("touchmove",e=>{if(!startX)return;const x=e.touches[0].clientX,y=e.touches[0].clientY;dx=x-startX;const dy=y-startY;if(Math.abs(dy)>Math.abs(dx)+8){return}if(dx<0){moved=true;const shift=Math.max(-88,dx);content.style.transform=`translateX(${shift}px)`;actions.style.opacity=String(Math.min(1,Math.abs(shift)/60))}},{passive:true});
+  row.addEventListener("touchend",()=>{if(!startX)return;content.style.transition="transform .18s ease";if(dx<-55){content.style.transform="translateX(-88px)";actions.style.opacity="1"}else{content.style.transform="translateX(0)";actions.style.opacity="0"}startX=0});
+}
+
 function showTransactionDetails(id){
   const t=state.transactions.find(x=>x.id===id);
   if(!t)return;
@@ -269,7 +291,7 @@ function showTransactionDetails(id){
       <div><span>Description</span><b>${esc(t.description)}</b></div>
       ${t.needsReview?`<div><span>Status</span><b class="review-badge">Needs review</b></div>`:""}
     </div>
-    <button class="secondary full" onclick="closeModal()">Done</button>`);
+    <div class="button-row"><button class="secondary" onclick="closeModal()">Done</button><button class="danger" onclick="deleteTransaction('${encodeURIComponent(t.id)}')">Delete</button></div>`);
 }
 
 function renderAnalytics(){
@@ -288,7 +310,7 @@ function renderAnalytics(){
 }
 
 function showCategoryTransactions(category){
-  const items=state.transactions.filter(t=>t.month===state.month && t.kind==="expense" && t.category===category).sort((a,b)=>b.date.localeCompare(a.date)||b.amount-a.amount);
+  const items=activeTransactions().filter(t=>t.month===state.month && t.kind==="expense" && t.category===category).sort((a,b)=>b.date.localeCompare(a.date)||b.amount-a.amount);
   const hasReview=items.some(t=>t.needsReview);
   const categoryChoices=CATEGORIES.filter(c=>!['Income','Refund'].includes(c));
   const itemHtml=t=>{
@@ -300,6 +322,7 @@ function showCategoryTransactions(category){
   };
   openModal(`<div class="review-top"><div><span class="review-badge">${esc(category)}</span>${hasReview?`<span class="review-badge inline-review-badge">Needs review</span>`:""}</div><span class="review-count">${items.length} transaction${items.length===1?"":"s"}</span></div><h2>${esc(category)}</h2><p>${hasReview?"Select a category directly below any transaction marked Needs review.":`Transactions in ${esc(monthLabel(state.month))}.`}</p><div class="category-transactions">${items.length?items.map(itemHtml).join(""):`<div class="empty">No transactions in this category.</div>`}</div>`);
   document.querySelectorAll("#modalContent [data-tx-id]").forEach(b=>b.onclick=()=>showTransactionDetails(b.dataset.txId));
+  document.querySelectorAll("#modalContent .swipe-row").forEach(enableSwipeDelete);
   document.querySelectorAll("#modalContent [data-inline-category]").forEach(b=>b.onclick=()=>categorizeInlineTransaction(b.dataset.inlineCategory,decodeURIComponent(b.dataset.categoryValue)));
 }
 
@@ -318,6 +341,58 @@ window.categorizeInlineTransaction=async function(id,category){
   showCategoryTransactions(category);
   toast(`${updated.merchant||"Transaction"} categorized as ${category}.`);
 };
+
+async function deleteTransaction(encodedId){
+  const id=decodeURIComponent(encodedId);
+  const t=state.transactions.find(x=>x.id===id);
+  if(!t)return;
+  const ok=confirm(`Delete ${t.merchant||t.description} for ${money(t.amount)}?\n\nThis will update your monthly calculations.`);
+  if(!ok)return;
+  const updated={...t,deletedAt:new Date().toISOString()};
+  await dbPut(STORE_TX,updated);
+  state.transactions=state.transactions.map(x=>x.id===id?updated:x);
+  recomputeCycleMonths();
+  for(const row of state.transactions) await dbPut(STORE_TX,row);
+  closeModal();
+  render();
+  toast("Transaction deleted. You can restore it from Deleted.");
+}
+
+async function restoreTransaction(encodedId){
+  const id=decodeURIComponent(encodedId);
+  const t=state.transactions.find(x=>x.id===id);
+  if(!t)return;
+  const updated={...t}; delete updated.deletedAt;
+  recomputeCycleMonths();
+  const cycleMonth=state.transactions.find(x=>x.id===id)?.month || updated.month;
+  updated.month=cycleMonth;
+  await dbPut(STORE_TX,updated);
+  state.transactions=state.transactions.map(x=>x.id===id?updated:x);
+  recomputeCycleMonths();
+  for(const row of state.transactions) await dbPut(STORE_TX,row);
+  render();
+  toast("Transaction restored.");
+}
+
+async function permanentlyDeleteTransaction(encodedId){
+  const id=decodeURIComponent(encodedId);
+  const t=state.transactions.find(x=>x.id===id);
+  if(!t)return;
+  const ok=confirm(`Permanently delete ${t.merchant||t.description}?\n\nThis cannot be undone unless you have a backup.`);
+  if(!ok)return;
+  await dbDelete(STORE_TX,id);
+  state.transactions=state.transactions.filter(x=>x.id!==id);
+  recomputeCycleMonths();
+  for(const row of state.transactions) await dbPut(STORE_TX,row);
+  render();
+  toast("Transaction permanently deleted.");
+}
+
+function renderDeleted(){
+  const deleted=state.transactions.filter(t=>t.deletedAt).sort((a,b)=>String(b.deletedAt).localeCompare(String(a.deletedAt)));
+  return `<div class="page-head"><div><div class="section-kicker">Safety net</div><div class="section-title">Deleted</div><div class="page-subtitle">Deleted transactions are kept here until you permanently remove them.</div></div></div>
+    <div class="card">${deleted.length?deleted.map(t=>`<div class="deleted-row"><div class="deleted-info"><div class="txn-name">${esc(t.merchant||t.description)}</div><div class="txn-meta">${fmtDate(t.date)} • ${esc(t.category)} • Deleted ${fmtDate(String(t.deletedAt).slice(0,10))}</div></div><div class="deleted-actions"><div class="txn-amount ${t.kind==="income"?"credit":"debit"}">${t.kind==="income"?"+":"−"}${money(t.amount)}</div><div class="button-row"><button class="secondary small" onclick="restoreTransaction('${encodeURIComponent(t.id)}')">Restore</button><button class="danger small" onclick="permanentlyDeleteTransaction('${encodeURIComponent(t.id)}')">Delete forever</button></div></div></div>`).join(""):`<div class="empty"><strong>No deleted transactions</strong><span>Transactions you swipe-delete will appear here.</span></div>`}</div>`;
+}
 
 function renderRules(){
   const rules=[...state.rules].sort((a,b)=>a.pattern.localeCompare(b.pattern));
@@ -508,7 +583,7 @@ async function startImportReview(){
   toast(`${added} transaction${added===1?"":"s"} imported.`);
 }
 function showReviewFromState(){
-  const items=state.transactions.filter(t=>t.needsReview);
+  const items=activeTransactions().filter(t=>t.needsReview);
   if(!items.length){toast("No transactions need review.");return}
   showReview(items,0,[]);
 }
