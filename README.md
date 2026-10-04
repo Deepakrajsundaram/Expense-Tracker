@@ -80,3 +80,9 @@ Possible duplicates with the same date, amount, direction, and merchant are held
 ## V1.0.0 scope
 
 This is the first working foundation. It is intentionally focused on safe import, deduplication, categorization, local storage, and mobile usability before adding more complexity.
+
+
+### v1.0.11
+- Home now shows the latest transaction date imported, last upload timestamp, and a simple up-to-date/gap status.
+- Upload timestamps are stored in IndexedDB metadata and included in backup/restore.
+- Existing transactions and deduplication behavior are preserved.

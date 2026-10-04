@@ -1,7 +1,7 @@
 /* D's Expense Tracker v1.0.10
    Local-first. No bank connection. No server-side transaction storage.
 */
-const APP_VERSION = "1.0.10";
+const APP_VERSION = "1.0.11";
 const DB_NAME = "ds-expense-tracker";
 const DB_VERSION = 1;
 const STORE_TX = "transactions";
@@ -46,6 +46,7 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const fmtDate = iso => { if(!iso) return ""; const d=new Date(iso+"T00:00:00"); return d.toLocaleDateString("en-IN",{day:"2-digit",month:"short",year:"numeric"}); };
 const monthKey = iso => (iso||"").slice(0,7);
 const currentMonth = () => new Date().toISOString().slice(0,7);
+const fmtTimestamp = iso => { if(!iso) return ""; const d=new Date(iso); if(isNaN(d)) return ""; return d.toLocaleString("en-IN",{day:"2-digit",month:"short",year:"numeric",hour:"2-digit",minute:"2-digit",hour12:true}); };
 const monthLabel = key => { const d=new Date(key+"-01T00:00:00"); return d.toLocaleDateString("en-IN",{month:"long",year:"numeric"}); };
 const SALARY_PREFIX = "NEFT";
 const SALARY_MATCH = "ACCENTURE SOLUTIONS PVT LTD";
@@ -131,10 +132,40 @@ async function dbClear(store){
   const s=await txStore(store,"readwrite"); return new Promise((res,rej)=>{const r=s.clear();r.onsuccess=()=>res();r.onerror=()=>rej(r.error)});
 }
 
+async function getMeta(key){
+  const rows=await dbGetAll(STORE_META);
+  return rows.find(x=>x.key===key)?.value;
+}
+
+function importStatus(){
+  const importedDates=state.transactions.map(t=>t.date).filter(Boolean).sort();
+  const through=importedDates.length?importedDates[importedDates.length-1]:"";
+  return {through,lastUploaded:state.lastUploadedAt||""};
+}
+
+function importStatusHtml(){
+  const st=importStatus();
+  if(!st.through) return `<div class="card import-status-card"><div class="card-title">Import status</div><div class="import-status-empty">No transactions imported yet.</div><button class="primary full" id="uploadAction">Import statement</button></div>`;
+  const today=new Date(); today.setHours(0,0,0,0);
+  const throughDate=new Date(st.through+"T00:00:00"); throughDate.setHours(0,0,0,0);
+  const daysBehind=Math.max(0,Math.round((today-throughDate)/86400000));
+  const status=daysBehind===0?"Up to date":`${daysBehind} day${daysBehind===1?"":"s"} behind`;
+  const statusClass=daysBehind===0?"import-status-ok":"import-status-gap";
+  return `<div class="card import-status-card"><div class="card-title">Import status <span class="import-status-pill ${statusClass}">${status}</span></div>
+    <div class="import-status-grid">
+      <div><div class="stat-label">Transactions imported through</div><div class="import-status-value">${fmtDate(st.through)}</div></div>
+      <div><div class="stat-label">Last uploaded</div><div class="import-status-value">${st.lastUploaded?fmtTimestamp(st.lastUploaded):"Not available"}</div></div>
+    </div>
+    ${daysBehind>0?`<div class="import-status-note">No imported transaction is recorded after ${fmtDate(st.through)}. Upload your latest statement to catch up.</div>`:""}
+    <button class="secondary full" id="uploadAction">Import latest statement</button>
+  </div>`;
+}
+
 async function init(){
   state.transactions=await dbGetAll(STORE_TX);
   state.rules=await dbGetAll(STORE_RULES);
   const custom=await dbGetAll(STORE_META);
+  state.lastUploadedAt=custom.find(x=>x.key==="lastUploadedAt")?.value||"";
   const customCategories=custom.find(x=>x.key==="customCategories")?.value;
   if(Array.isArray(customCategories)){
     CATEGORIES=[...new Set([...BASE_CATEGORIES,...customCategories.map(x=>String(x).trim()).filter(Boolean)])];
@@ -222,6 +253,7 @@ function renderHome(){
     <select id="monthSelect" class="select" style="width:auto;min-width:140px">${monthOptions()}</select></div>
     <div class="cycle-control"><span><b>${esc(monthLabel(state.month))}</b> · ${esc(range)}</span><button id="cycleSettingsBtn" class="cycle-change">Change</button></div>
   </section>
+  ${importStatusHtml()}
   <div class="card"><div class="card-title">Money movement</div>
     <div class="stat-grid">
       <div class="stat"><div class="stat-label">Income</div><div class="stat-value">${money(s.income)}</div></div>
@@ -578,7 +610,10 @@ function showImportPreview(r){
 }
 async function startImportReview(){
   const items=state.importBatch?.newItems||[];
-  if(!items.length){closeModal();toast("Nothing new to import.");return}
+  const uploadedAt=new Date().toISOString();
+  await dbPut(STORE_META,{key:"lastUploadedAt",value:uploadedAt});
+  state.lastUploadedAt=uploadedAt;
+  if(!items.length){state.importBatch=null;closeModal();render();toast("No new transactions. Upload recorded.");return}
 
   let added=0;
   for(const t of items){
@@ -690,7 +725,7 @@ async function addRule(){
 }
 
 async function exportBackup(){
-  const payload={app:"D's Expense Tracker",version:APP_VERSION,exportedAt:new Date().toISOString(),transactions:state.transactions,rules:state.rules,customCategories:CATEGORIES.filter(c=>!BASE_CATEGORIES.includes(c))};
+  const payload={app:"D's Expense Tracker",version:APP_VERSION,exportedAt:new Date().toISOString(),transactions:state.transactions,rules:state.rules,customCategories:CATEGORIES.filter(c=>!BASE_CATEGORIES.includes(c)),lastUploadedAt:state.lastUploadedAt||""};
   const blob=new Blob([JSON.stringify(payload,null,2)],{type:"application/json"});
   const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`ds-expense-tracker-backup-${currentMonth()}.json`;a.click();URL.revokeObjectURL(a.href);
 }
@@ -703,6 +738,7 @@ function importBackup(){
       CATEGORIES=[...new Set([...BASE_CATEGORIES,...data.customCategories.map(x=>String(x).trim()).filter(Boolean)])];
       await dbPut(STORE_META,{key:"customCategories",value:CATEGORIES.filter(c=>!BASE_CATEGORIES.includes(c))});
     }
+    if(data.lastUploadedAt){state.lastUploadedAt=String(data.lastUploadedAt);await dbPut(STORE_META,{key:"lastUploadedAt",value:state.lastUploadedAt});}
     let added=0;for(const t of data.transactions){if(!state.transactions.some(x=>x.id===t.id)){await dbPut(STORE_TX,t);added++;}}
     for(const r of data.rules) await dbPut(STORE_RULES,r);
     state.transactions=await dbGetAll(STORE_TX);state.rules=await dbGetAll(STORE_RULES);recomputeCycleMonths();for(const t of state.transactions) await dbPut(STORE_TX,t);render();toast(`${added} transaction${added===1?"":"s"} restored.`);
